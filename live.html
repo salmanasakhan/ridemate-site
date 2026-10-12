@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex" />
+<title>Live ride · RideMate</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+<style>
+  :root { --bg: #fff; --text: #16181c; --muted: #6b7280; --card: #ffffff; --brand: #1f6fe5; --good: #1a9a55; --bad: #df3a40; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0e1013; --text: #eceef1; --muted: #9aa3ad; --card: #171a1f; --brand: #5aa0ff; } }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #map { position: fixed; inset: 0; }
+  .panel { position: fixed; left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); max-width: 520px; margin: 0 auto; background: var(--card); border-radius: 18px; box-shadow: 0 8px 30px rgba(0,0,0,.25); padding: 14px 16px; z-index: 2; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--good); flex: none; animation: pulse 1.4s infinite; }
+  .dot.off { background: var(--muted); animation: none; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  h1 { font-size: 18px; margin: 0; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .stats { display: flex; gap: 18px; margin-top: 10px; flex-wrap: wrap; }
+  .stats b { display: block; font-size: 18px; }
+  a.btn { display: inline-block; margin-top: 12px; padding: 10px 14px; border-radius: 999px; background: var(--brand); color: #fff; text-decoration: none; font-weight: 600; font-size: 14px; }
+  .rider { width: 26px; height: 26px; border-radius: 50%; background: var(--brand); border: 4px solid #fff; box-shadow: 0 0 0 8px rgba(31,111,229,.25); }
+  .brand { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 12px; z-index: 2; background: var(--card); border-radius: 999px; padding: 6px 12px; font-weight: 700; font-size: 14px; box-shadow: 0 3px 12px rgba(0,0,0,.15); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="brand">RideMate · live ride</div>
+<div class="panel" id="panel">
+  <div class="row"><span class="dot off" id="dot"></span><h1 id="title">Loading…</h1></div>
+  <div class="muted" id="sub">Fetching the latest position</div>
+  <div class="stats" id="stats" hidden>
+    <div><b id="speed">–</b><span class="muted">km/h</span></div>
+    <div id="destBox" hidden><b id="eta">–</b><span class="muted" id="dest"></span></div>
+  </div>
+  <a class="btn" id="gmaps" target="_blank" rel="noopener" hidden>Open in Google Maps</a>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+  // Publishable key: read access is limited to get_live_share(token) by the database rules.
+  const SUPABASE_URL = 'https://olvynjcovkzimhovxekd.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_Sklu_69zXU3RieWYN8iArw_IApTfsFk';
+  const token = (location.hash || '').replace('#', '').trim();
+  const $ = (id) => document.getElementById(id);
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: `https://tiles.openfreemap.org/styles/${dark ? 'dark' : 'liberty'}`,
+    center: [78.96, 22.59],
+    zoom: 4,
+    attributionControl: { compact: true },
+  });
+  const el = document.createElement('div');
+  el.className = 'rider';
+  const marker = new maplibregl.Marker({ element: el });
+  let placed = false;
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
+  const ago = (iso) => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
+  };
+
+  async function tick() {
+    if (!/^[0-9a-f]{32}$/.test(token)) {
+      $('title').textContent = 'Link not valid';
+      $('sub').textContent = 'Ask the rider to share their live location again.';
+      return;
+    }
+    const { data, error } = await sb.rpc('get_live_share', { p_token: token });
+    const s = data && data[0];
+    if (error || !s) {
+      $('title').textContent = error ? 'Can’t reach RideMate' : 'Link not found';
+      $('sub').textContent = error ? 'Retrying…' : 'It may have been removed.';
+      return;
+    }
+    $('title').textContent = s.display_name || 'A RideMate rider';
+    $('dot').className = 'dot' + (s.active ? '' : ' off');
+    if (!s.active) {
+      $('sub').textContent = 'This rider has stopped sharing their location.';
+      $('stats').hidden = true;
+      $('gmaps').hidden = true;
+      marker.remove();
+      return;
+    }
+    if (s.lat == null) {
+      $('sub').textContent = 'Waiting for the first GPS position…';
+      return;
+    }
+    $('sub').textContent = `Updated ${ago(s.updated_at)} · link ends ${new Date(s.expires_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', day: 'numeric', month: 'short' })}`;
+    $('stats').hidden = false;
+    $('speed').textContent = s.speed_kmph != null ? Math.round(s.speed_kmph) : '–';
+    if (s.destination_name && s.eta) {
+      $('destBox').hidden = false;
+      $('eta').textContent = new Date(s.eta).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      $('dest').textContent = `ETA · ${s.destination_name.split(',')[0]}`;
+    } else $('destBox').hidden = true;
+    $('gmaps').hidden = false;
+    $('gmaps').href = `https://maps.google.com/?q=${s.lat},${s.lon}`;
+    marker.setLngLat([s.lon, s.lat]).addTo(map);
+    if (!placed) {
+      map.jumpTo({ center: [s.lon, s.lat], zoom: 13 });
+      placed = true;
+    } else map.easeTo({ center: [s.lon, s.lat], duration: 800 });
+  }
+  tick();
+  setInterval(tick, 10000);
+</script>
+</body>
+</html>
