@@ -1,0 +1,38 @@
+# GitHub Actions workflow for the ridemate-site repo (.github/workflows/keep-server-awake.yml).
+# Supabase's free plan pauses a project after about a week without activity. This pings the
+# RideMate database every 3 days so it stays awake. Free: public repos get unlimited Actions minutes.
+# Uses only the publishable (public) key that already ships inside the app.
+name: Keep RideMate server awake
+
+on:
+  schedule:
+    - cron: '17 3 */3 * *' # 03:17 UTC every 3 days
+  workflow_dispatch: # "Run workflow" button for a manual ping
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the RideMate database
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            "https://olvynjcovkzimhovxekd.supabase.co/rest/v1/group_rides?select=id&limit=1" \
+            -H "apikey: sb_publishable_Sklu_69zXU3RieWYN8iArw_IApTfsFk")
+          echo "Supabase answered HTTP $code"
+          test "$code" = "200"
+
+      # GitHub switches off scheduled workflows in repos with no commits for 60 days.
+      # One tiny commit a month keeps this schedule running.
+      - uses: actions/checkout@v4
+      - name: Monthly keep-alive commit
+        run: |
+          if [ "$(date -u +%d)" -gt 03 ]; then echo "Not the first run of the month"; exit 0; fi
+          date -u > .keepalive
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive
+          git commit -m "Keep server-awake schedule active" || exit 0
+          git push
